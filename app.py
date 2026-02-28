@@ -15,6 +15,12 @@ from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
 
+import math
+import time
+import threading
+import webbrowser
+import pyautogui
+
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -61,7 +67,7 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=use_static_image_mode,
-        max_num_hands=1,
+        max_num_hands=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
@@ -95,9 +101,16 @@ def main():
     # Finger gesture history ################################################
     finger_gesture_history = deque(maxlen=history_length)
 
+    # Finger gesture history ################################################
+    finger_gesture_history = deque(maxlen=history_length)
+
+    # Initialize the Stark AI cooldown timer
+    last_ai_launch_time = 0
+
     #  ########################################################################
     mode = 0
-
+    screen_width, screen_height = pyautogui.size()
+    is_grabbing = False
     while True:
         fps = cvFpsCalc.get()
 
@@ -123,6 +136,30 @@ def main():
 
         #  ####################################################################
         if results.multi_hand_landmarks is not None:
+            # --- START STARK CLAP DETECTION ---
+            if len(results.multi_hand_landmarks) == 2:
+                # Grab the wrist coordinates (landmark 0) of both hands
+                hand1_wrist = results.multi_hand_landmarks[0].landmark[0]
+                hand2_wrist = results.multi_hand_landmarks[1].landmark[0]
+
+                # Convert the normalized AI coordinates into real pixel coordinates
+                h1_x, h1_y = int(hand1_wrist.x * cap_width), int(hand1_wrist.y * cap_height)
+                h2_x, h2_y = int(hand2_wrist.x * cap_width), int(hand2_wrist.y * cap_height)
+
+                # Calculate the exact mathematical distance between the two wrists
+                distance = math.hypot(h1_x - h2_x, h1_y - h2_y)
+                
+                # Trigger if the wrists are incredibly close together (a clap)
+                current_time = time.time()
+                if distance < 40 and (current_time - last_ai_launch_time > 5):
+                    print("WAKE UP! DADDY IS HOME.")
+                    
+                    # Launch the AI in a background thread so the camera never freezes
+                    threading.Thread(target=webbrowser.open, args=("https://gemini.google.com",)).start()
+                    
+                    last_ai_launch_time = current_time
+            # --- END STARK CLAP DETECTION ---
+
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
                                                   results.multi_handedness):
                 # Bounding box calculation
@@ -145,7 +182,26 @@ def main():
                     point_history.append(landmark_list[8])
                 else:
                     point_history.append([0, 0])
-
+                # --- START STARK GRAB & MOVE ---
+                # Assuming '1' is the ID for the 'Fist' gesture in your CSV/Model
+                if hand_sign_id == 1: 
+                    # Use the wrist (landmark 0) to define cursor position
+                    # We map the 0-1 coordinate to your actual screen resolution
+                    cursor_x = int(landmark_list[0][0] * (screen_width / cap_width))
+                    cursor_y = int(landmark_list[0][1] * (screen_height / cap_height))
+                    
+                    if not is_grabbing:
+                        pyautogui.mouseDown()
+                        is_grabbing = True
+                    
+                    # Smoothly move the mouse to the new wrist position
+                    pyautogui.moveTo(cursor_x, cursor_y)
+                
+                else:
+                    if is_grabbing:
+                        pyautogui.mouseUp()
+                        is_grabbing = False
+                # --- END STARK GRAB & MOVE ---
                 # Finger gesture classification
                 finger_gesture_id = 0
                 point_history_len = len(pre_processed_point_history_list)

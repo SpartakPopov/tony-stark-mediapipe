@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 import tensorflow as tf
+from ai_edge_litert.interpreter import Interpreter
 
 
 class KeyPointClassifier(object):
@@ -10,7 +11,7 @@ class KeyPointClassifier(object):
         model_path='model/keypoint_classifier/keypoint_classifier.tflite',
         num_threads=1,
     ):
-        self.interpreter = tf.lite.Interpreter(model_path=model_path,
+        self.interpreter = Interpreter(model_path=model_path,
                                                num_threads=num_threads)
 
         self.interpreter.allocate_tensors()
