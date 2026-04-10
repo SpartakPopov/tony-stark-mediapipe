@@ -1,3 +1,5 @@
+# PS C:\Users\spart\Desktop\tony-stark-mediapipe> .\venv\Scripts\activate
+# (venv) PS C:\Users\spart\Desktop\tony-stark-mediapipe> python app.py
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import csv
@@ -107,6 +109,19 @@ def main():
     # Initialize the Stark AI cooldown timer
     last_ai_launch_time = 0
 
+    # Clap detection state machine
+    # 'idle'  : waiting for hands to be far apart before arming
+    # 'armed' : hands were far apart, now watching for them to clap together
+    clap_state = 'idle'
+    clap_approach_start_time = 0
+    clap_prev_distance = float('inf')   # distance on the previous frame (for velocity)
+    clap_closing_velocity = 0.0         # px/frame the hands were closing at
+    CLAP_ARM_DIST = 200       # px  — hands must be this far apart to arm the detector
+    CLAP_TRIGGER_DIST = 90    # px  — hands must come this close to fire (visible clap)
+    CLAP_FAST_CLOSE_VEL = 15  # px/frame — closing speed that counts as "incoming clap"
+    CLAP_APPROACH_TIMEOUT = 2.5  # sec — reset if armed but no clap within this time
+    CLAP_COOLDOWN = 3.0       # sec — minimum gap between two activations
+
     #  ########################################################################
     mode = 0
     screen_width, screen_height = pyautogui.size()
@@ -137,27 +152,53 @@ def main():
         #  ####################################################################
         if results.multi_hand_landmarks is not None:
             # --- START STARK CLAP DETECTION ---
+            current_time = time.time()
             if len(results.multi_hand_landmarks) == 2:
-                # Grab the wrist coordinates (landmark 0) of both hands
-                hand1_wrist = results.multi_hand_landmarks[0].landmark[0]
-                hand2_wrist = results.multi_hand_landmarks[1].landmark[0]
+                # Use landmark 9 (middle-finger MCP joint) as the palm center.
+                # This is far more accurate than the wrist (landmark 0) for
+                # measuring how close two palms actually are during a clap.
+                palm1 = results.multi_hand_landmarks[0].landmark[9]
+                palm2 = results.multi_hand_landmarks[1].landmark[9]
 
-                # Convert the normalized AI coordinates into real pixel coordinates
-                h1_x, h1_y = int(hand1_wrist.x * cap_width), int(hand1_wrist.y * cap_height)
-                h2_x, h2_y = int(hand2_wrist.x * cap_width), int(hand2_wrist.y * cap_height)
+                p1_x = palm1.x * cap_width
+                p1_y = palm1.y * cap_height
+                p2_x = palm2.x * cap_width
+                p2_y = palm2.y * cap_height
 
-                # Calculate the exact mathematical distance between the two wrists
-                distance = math.hypot(h1_x - h2_x, h1_y - h2_y)
-                
-                # Trigger if the wrists are incredibly close together (a clap)
-                current_time = time.time()
-                if distance < 40 and (current_time - last_ai_launch_time > 5):
-                    print("WAKE UP! DADDY IS HOME.")
-                    
-                    # Launch the AI in a background thread so the camera never freezes
-                    threading.Thread(target=webbrowser.open, args=("https://gemini.google.com",)).start()
-                    
-                    last_ai_launch_time = current_time
+                distance = math.hypot(p1_x - p2_x, p1_y - p2_y)
+
+                if clap_state == 'idle':
+                    # Arm the detector only when hands are clearly separated.
+                    # This prevents false triggers when hands are already close.
+                    if distance > CLAP_ARM_DIST:
+                        clap_state = 'armed'
+                        clap_approach_start_time = current_time
+
+                elif clap_state == 'armed':
+                    # Reset if hands drifted apart again (re-arm with fresh timer)
+                    if distance > CLAP_ARM_DIST:
+                        clap_approach_start_time = current_time
+
+                    # Timeout safety: if no clap after CLAP_APPROACH_TIMEOUT, go idle.
+                    # Stops the detector getting permanently stuck in 'armed'.
+                    elif current_time - clap_approach_start_time > CLAP_APPROACH_TIMEOUT:
+                        clap_state = 'idle'
+
+                    # THE CLAP: hands came close AND we were armed (they were far before)
+                    elif distance < CLAP_TRIGGER_DIST:
+                        if current_time - last_ai_launch_time > CLAP_COOLDOWN:
+                            print("WAKE UP! DADDY IS HOME.")
+                            threading.Thread(
+                                target=webbrowser.open,
+                                args=("https://gemini.google.com",)
+                            ).start()
+                            last_ai_launch_time = current_time
+                        # Always reset to idle after a clap (hit or cooldown)
+                        clap_state = 'idle'
+            else:
+                # One or zero hands visible — reset to idle so we don't stay armed
+                # if a hand leaves the frame mid-approach.
+                clap_state = 'idle'
             # --- END STARK CLAP DETECTION ---
 
             for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
